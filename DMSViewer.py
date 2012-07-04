@@ -91,11 +91,14 @@ class Struct(object):
             
 
 class DMSSession(object):
-    serverName = "http://mercury:8080"
+    serverName = "http://mercury/knowledgetree"
     wsdlFile = "/ktwebservice/webservice.php?wsdl"
     def __init__(self, callbacks=[]):
         self.queue = Queue.Queue()
-        credentials = os.path.join(user.home, ".dms_credentials")
+        credentials = os.path.join(user.home, ".dms_credentials.txt")
+        if not os.path.exists(credentials):
+            wx.MessageBox("No '.dms_credentials.txt' file found in %s"%user.home, style=wx.ICON_ERROR)
+            raise Exception("Missing credentials file")
         usern, passwd = open(credentials).read().split("\n")[:2]
         self.username = usern
         self.passwd = passwd
@@ -104,15 +107,23 @@ class DMSSession(object):
         self._working = False
         
         self.workerThread = threading.Thread(target=self.Worker)
-        self.workerThread.setDaemon(True)
+        #self.workerThread.setDaemon(True)
         self.workerThread.start()
+        
+    def close(self):
+        self.queue.put(None)
+        self.workerThread.join(10.0)
         
     def Worker(self):
         self.server = WSDL.Proxy(self.serverName + self.wsdlFile)
         self.login(self.username, self.passwd)
         while True:
             try:
-                func, args, kwds, callback = self.queue.get(block=True, timeout=0.2)
+                item = self.queue.get(block=True, timeout=0.2)
+                if item is None:
+                    print "Ending worker thread"
+                    return
+                func, args, kwds, callback = item
                 if not self._working:
                     self._working=True
                     for cb in self.callbacks:
@@ -222,12 +233,17 @@ class DocumentPopup(NodePopup):
     def OnOpen(self, event):
         msg, filename = self.node.DownloadDoc(self.frame.session)
         ext = os.path.splitext(filename)[1]
-        fobj = tempfile.NamedTemporaryFile(suffix=ext)
+        fobj = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
         url = msg #self.frame.session.serverName + msg
         print "fetching url:", url
         urllib.urlretrieve(url, fobj.name)
-        launch = {'win32':"start", 'linux2':"gnome-open"}
-        subprocess.Popen([launch[sys.platform],fobj.name])
+        fobj.close()
+        if sys.platform.startswith("win"):
+            os.startfile(fobj.name)
+        else:
+            launch = {'win32':fobj.name, 'linux2':["gnome-open", fobj.name]}
+            print "launched program", fobj.name
+            subprocess.Popen(launch[sys.platform])
         print "launched program", fobj.name
         self._openFiles.append(fobj)
         
@@ -267,7 +283,11 @@ class ModelNode(object):
     
     def Drop(self, session, data):
         pass
-
+    
+class DummyNode(object):
+    def __init__(self, id):
+        self.id = id
+    
         
 class Folder(ModelNode):    
     _popup = FolderPopup
@@ -409,17 +429,24 @@ class TreeView(wx.Panel):
         rootid = self.tree.AddRoot("folders", data=wx.TreeItemData(rootFolder), image=self.fldridx)
         rootFolder.treeid = rootid
         self.tree.SetItemHasChildren(rootid)
+        dummy = DummyNode(wx.NewId())
+        dummy_id = self.tree.AppendItem(rootid, "...fetching data...", 
+                         data=wx.TreeItemData(dummy))
+        dummy.treeid = dummy_id
         
         self.tree.Bind(wx.EVT_TREE_ITEM_EXPANDED, self.OnExpandItem)
         self.tree.Bind(wx.EVT_TREE_ITEM_RIGHT_CLICK, self.OnRClick)
         self.tree.Bind(wx.EVT_TREE_ITEM_GETTOOLTIP, self.OnToolTip)
-        #self.tree.Bind(wx.EVT_TREE_ITEM_ACTIVATED, self.OnActivate)
+        self.tree.Bind(wx.EVT_TREE_ITEM_ACTIVATED, self.OnExpandItem)
         self.tree.Bind(wx.EVT_LEFT_DOWN, self.OnClick)
         self.tree.Bind(wx.EVT_LEFT_UP, self.OnClick)
         
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(self.tree, 1, wx.ALL|wx.EXPAND, 2)
         self.SetSizer(sizer)
+        
+    def OnActivate(self, evt):
+        print evt
         
     def IterChildren(self, treeid):
         child = self.tree.GetFirstChild(treeid)
@@ -444,6 +471,7 @@ class TreeView(wx.Panel):
                     node = Document(item)
                 newid = self.tree.AppendItem(treeid, item.filename, 
                                         data=wx.TreeItemData(node), image=img)
+                print "Appended", newid
                 node.treeid = newid
                 if item.item_type == 'F':
                     self.tree.SetItemHasChildren(newid, True)
@@ -452,6 +480,11 @@ class TreeView(wx.Panel):
                         self.tree.Expand(newid)
                         callback = self.makeSyncCallback(newid, [], recursive)
                         node.GetChildren(self.session, callback)
+                    else:
+                        dummy = DummyNode(wx.NewId())
+                        dummy_id = self.tree.AppendItem(newid, "...fetching data...", 
+                                         data=wx.TreeItemData(dummy))
+                        dummy.treeid = dummy_id
             for id in currentIds.difference(serverIds):
                 node = currentMap[id]
                 self.tree.Delete(node.treeid)
@@ -459,6 +492,7 @@ class TreeView(wx.Panel):
         return callback
         
     def OnExpandItem(self, event):
+        print "expanding", event
         recursive = self._shift_down
         treeid = event.GetItem()
         folder = self.tree.GetItemData(treeid).GetData()
@@ -475,6 +509,8 @@ class TreeView(wx.Panel):
     def OnToolTip(self, event):
         treeid = event.GetItem()
         node = self.tree.GetItemData(treeid).GetData()
+        if isinstance(node, DummyNode):
+            return
         if treeid.IsOk():
             get_props = ("%s : %s"%(k,str(v)) for k,v in node._properties.items() if v != "n/a")
             properties = "\n".join(get_props)
@@ -496,6 +532,7 @@ class TreeView(wx.Panel):
 class DMSViewerApp(wx.Frame):
     def __init__(self):
         wx.Frame.__init__(self, None, -1, "DMS View", size=(500,800))
+        self.Bind(wx.EVT_CLOSE, self.OnClose)
         
         mb = wx.MenuBar()
         bookmarks = wx.Menu()
@@ -519,6 +556,11 @@ class DMSViewerApp(wx.Frame):
         self.notebook.AddPage(self.tree_view, "Browse Documents")
         self.notebook.AddPage(self.search_view, "Search")
         
+    def OnClose(self, event):
+        print "closing"
+        self.session.close()
+        self.Destroy()
+        
     def OnWorking(self, value):
         self.tree_view.OnWorking(value)
         self.search_view.OnWorking(value)
@@ -530,4 +572,5 @@ if __name__=="__main__":
     frame = DMSViewerApp()
     frame.Show()
     app.MainLoop()
-    
+    print "EXIT"
+    time.sleep(1.0)
