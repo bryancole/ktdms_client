@@ -225,7 +225,11 @@ class DMSSession(object):
     
     @sync
     def downloadDoc(self, docId):
-        ret = self.server.download_document(self._id, docId)
+        try:
+            ret = self.server.download_document(self._id, int(docId), '')
+        except:
+            print "Args:", self._id, docId
+            raise
         assert ret.status_code==0
         return ret.message
         
