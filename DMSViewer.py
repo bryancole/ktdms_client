@@ -8,6 +8,13 @@ import subprocess
 import tempfile
 import os, sys
 import user
+import itertools
+import mimetools
+import mimetypes
+from cStringIO import StringIO
+import urllib
+import urllib2
+import json
 
 search_tooltip = """Valid search fields:
   CheckedOut , 
@@ -75,6 +82,70 @@ def sync(func):
     return newfunc
 
 
+class MultiPartForm(object):
+    """Accumulate the data to be used when posting a form."""
+
+    def __init__(self):
+        self.form_fields = []
+        self.files = []
+        self.boundary = mimetools.choose_boundary()
+        return
+    
+    def get_content_type(self):
+        return 'multipart/form-data; boundary=%s' % self.boundary
+
+    def add_field(self, name, value):
+        """Add a simple field to the form data."""
+        self.form_fields.append((name, value))
+        return
+
+    def add_file(self, fieldname, filename, fileHandle, mimetype=None):
+        """Add a file to be uploaded."""
+        body = fileHandle.read()
+        if mimetype is None:
+            mimetype = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+        self.files.append((fieldname, filename, mimetype, body))
+        return
+    
+    def __str__(self):
+        """Return a string representing the form data, including attached files."""
+        # Build a list of lists, each containing "lines" of the
+        # request.  Each part is separated by a boundary string.
+        # Once the list is built, return a string where each
+        # line is separated by '\r\n'.  
+        parts = []
+        part_boundary = '--' + self.boundary
+        
+        # Add the form fields
+        parts.extend(
+            [ part_boundary,
+              'Content-Disposition: form-data; name="%s"' % name,
+              '',
+              value,
+            ]
+            for name, value in self.form_fields
+            )
+        
+        # Add the files to upload
+        parts.extend(
+            [ part_boundary,
+              'Content-Disposition: file; name="%s"; filename="%s"' % \
+                 (field_name, filename),
+              'Content-Type: %s' % content_type,
+              '',
+              body,
+            ]
+            for field_name, filename, content_type, body in self.files
+            )
+        
+        # Flatten the list and add closing boundary marker,
+        # then return CR+LF separated data
+        flattened = list(itertools.chain(*parts))
+        flattened.append('--' + self.boundary + '--')
+        flattened.append('')
+        return '\r\n'.join(str(a) for a in flattened)
+
+
 AsyncTaskEventId = wx.NewEventType()
 EVT_ASYNC_TASK = wx.PyEventBinder(AsyncTaskEventId, 1)
 
@@ -91,8 +162,10 @@ class Struct(object):
             
 
 class DMSSession(object):
-    serverName = "http://mercury/knowledgetree"
+    #serverName = "http://mercury/knowledgetree"
+    serverName = "http://privatekt"
     wsdlFile = "/ktwebservice/webservice.php?wsdl"
+    uploadFolder = '/ktwebservice/upload.php'
     def __init__(self, callbacks=[]):
         self.queue = Queue.Queue()
         credentials = os.path.join(user.home, ".dms_credentials.txt")
@@ -139,7 +212,7 @@ class DMSSession(object):
                 callback(ret) 
         
     def login(self, user, passwd):
-        ret = self.server.login(str(user),str(passwd),'')
+        ret = self.server.login(str(user),str(passwd),'','')
         check(ret)
         self._id = ret.message
         
@@ -172,10 +245,68 @@ class DMSSession(object):
         print "search result", ret
         return ret
     
+    def _upload(self, local_filename, filename):
+         # Create the form with simple fields
+        form = MultiPartForm()
+        form.add_field('session_id', self._id)
+        form.add_field('action', 'A')
+        form.add_field('output', 'json')
+        form.add_file(filename, local_filename, open(local_filename))
+    
+        # Build the request
+        request = urllib2.Request(self.serverName + self.uploadFolder)
+        #request.add_header('User-agent', 'PyMOTW (http://www.doughellmann.com/PyMOTW/)')
+        body = str(form)
+        request.add_header('Content-type', form.get_content_type())
+        request.add_header('Content-length', str(len(body)))
+        request.add_data(body)
+    
+#        print
+#        print 'OUTGOING DATA:'
+#        print request.get_data()
+#    
+#        print
+        result = urllib2.urlopen(request).read()
+        data = json.loads(result)
+        status = data['upload_status']
+        print 'SERVER RESPONSE:', status
+        this_fname = status.keys()[0]
+        temp_filename = status[this_fname]['tmp_name']
+        return temp_filename
+    
+    @sync
+    def delete_document(self, doc_id):
+        ret = self.server.delete_document(self._id, 
+                                          int(doc_id),
+                                          "Because I can...")
+        print "delete doc result:", ret
+        return ret
+    
+    @sync
+    def delete_folder(self, doc_id):
+        ret = self.server.delete_folder(self._id, 
+                                          int(doc_id),
+                                          "Because I can...")
+        print "delete doc result:", ret
+        return ret
+    
     @async
-    def add_document(self, local_filename, folder_id, title, filename,\
-                     documentype, tempfilename):
-        pass
+    def add_document(self, local_filename, folder_id, title="MyDocTitle", 
+                     filename=None, documentype="Default"):
+        if filename is None:
+            filename = os.path.basename(local_filename)
+        temp_filename = self._upload(local_filename, filename)
+        ret = self.server.add_document(self._id, folder_id, title, filename,
+                                 documentype, temp_filename)
+        print "add document result:", ret
+        return ret
+    
+    @async
+    def add_folder(self, new_folder_name, parent_id):
+        ret = self.server.create_folder(self._id, parent_id, new_folder_name)
+        print "create folder result:", ret
+        return ret
+                                 
         
 
     
@@ -197,11 +328,38 @@ class NodePopup(wx.Menu):
 class FolderPopup(NodePopup):
     def __init__(self, frame, treeid, node):
         super(self.__class__, self).__init__(frame, treeid, node)
-        self.Append(wx.NewId(), "Refresh")
-        self.Append(wx.NewId(), "Add Document")
-        self.Append(wx.NewId(), "Add Folder")
+        id = self.Append(wx.NewId(), "Refresh")
+        self.Bind(wx.EVT_MENU, self.OnRefresh)
+        id = self.Append(wx.NewId(), "Add Document")
+        self.Bind(wx.EVT_MENU, self.OnUpload, id)
+        id = self.Append(wx.NewId(), "Add Folder")
+        self.Bind(wx.EVT_MENU, self.OnAddFolder, id)
         self.Append(wx.NewId(), "Rename")
-        self.Append(wx.NewId(), "Delete")
+        id = self.Append(wx.NewId(), "Delete")
+        self.Bind(wx.EVT_MENU, self.OnDelete, id)
+        
+    def OnAddFolder(self, event):
+        name = wx.GetTextFromUser("Please enter name for new folder", "Create folder...", "New Folder")
+        if name:
+            self.node.AddFolder(name, self.frame.session)
+            self.frame.RefreshNode(self.treeid, recursive=False)
+        
+    def OnUpload(self, event):
+        fname = wx.FileSelector("Choose file to upload")
+        if os.path.exists(fname) and os.path.isfile(fname):
+            title = wx.GetTextFromUser("Please enter document title", "Enter Document Title", "MyDocTitle")
+            if title:
+                self.node.UploadDoc(fname, self.frame.session, title=title)
+                self.frame.RefreshNode(self.treeid, recursive=False)
+            
+    def OnRefresh(self, event):
+        self.frame.RefreshNode(self.treeid, recursive=False)
+            
+    def OnDelete(self, event):
+        title = self.node._properties['title']
+        if wx.MessageBox('Delete folder "%s"?'%title,
+                         style=wx.YES_NO)==wx.YES:
+            self.node.Delete(self.frame.session)
     
         
 class DocumentPopup(NodePopup):
@@ -219,7 +377,13 @@ class DocumentPopup(NodePopup):
         item.Enable(False)
         self.Append(wx.NewId(), "Copy")
         self.Append(wx.NewId(), "Rename")
-        self.Append(wx.NewId(), "Delete")
+        id = self.Append(wx.NewId(), "Delete")
+        self.Bind(wx.EVT_MENU, self.OnDelete, id)
+        
+    def OnDelete(self, event):
+        if wx.MessageBox("Do you really want to delete this file?",
+                         style=wx.YES_NO)==wx.YES:
+            self.node.Delete(self.frame.session)
         
     def OnDownload(self, event):
         msg, filename = self.node.DownloadDoc(self.frame.session)
@@ -296,6 +460,16 @@ class Folder(ModelNode):
         
     def Drop(self, session, data):
         pass
+    
+    def UploadDoc(self, fname, session, title=""):
+        ret = session.add_document(fname, self.id, title=title)
+        return ret
+    
+    def AddFolder(self, new_folder_name, session):
+        ret = session.add_folder(new_folder_name, self.id)
+        
+    def Delete(self, session):
+        ret = session.delete_folder(self.id)
 
     
 class Document(ModelNode):
@@ -303,6 +477,9 @@ class Document(ModelNode):
     def DownloadDoc(self, session):
         ret = session.downloadDoc(self.id)
         return ret, self.filename
+    
+    def Delete(self, session):
+        ret = session.delete_document(self.id)
 
 
 class SearchView(wx.Panel):
@@ -351,12 +528,13 @@ class SearchView(wx.Panel):
                 dlg = wx.MessageDialog(self, err, "Search Error")
                 dlg.ShowModal()
             else:
-                if hits:
-                    self.show_results(hits)
+                self.show_results(hits)
         self.session.search(text, callback=callback)
         
     def show_results(self, hits):
         self.tree.DeleteAllItems()
+        if not hits:
+            return
         self.search_results = []
         rootid = self.tree.AddRoot("Results:")
         self.tree.SetItemHasChildren(rootid)
@@ -495,6 +673,9 @@ class TreeView(wx.Panel):
         print "expanding", event
         recursive = self._shift_down
         treeid = event.GetItem()
+        self.RefreshNode(treeid, recursive)
+        
+    def RefreshNode(self, treeid, recursive=False):
         folder = self.tree.GetItemData(treeid).GetData()
         children = [self.tree.GetItemData(id).GetData() for id in self.IterChildren(treeid)]
         callback = self.makeSyncCallback(treeid, children, recursive)

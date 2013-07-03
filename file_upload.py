@@ -4,6 +4,7 @@ import mimetypes
 from cStringIO import StringIO
 import urllib
 import urllib2
+import json
 
 class MultiPartForm(object):
     """Accumulate the data to be used when posting a form."""
@@ -70,7 +71,9 @@ class MultiPartForm(object):
 
 if __name__ == '__main__':
     from SOAPpy import WSDL
-    wsdlFile = "http://mercury:8080/ktwebservice/webservice.php?wsdl"
+    server_base = "http://mercury/knowledgetree"
+    #wsdlFile = "http://mercury:8080/ktwebservice/webservice.php?wsdl"
+    wsdlFile = server_base + "/ktwebservice/webservice.php?wsdl"
     server = WSDL.Proxy(wsdlFile)
     
     ret = server.login('bryan.cole','clique','')
@@ -80,17 +83,18 @@ if __name__ == '__main__':
     form = MultiPartForm()
     form.add_field('session_id', session_id)
     form.add_field('action', 'A')
+    form.add_field('output', 'json')
     
     # Add a fake file
-    fname = "/home/bryan/checkFile.py"
-    form.add_file('biography', fname, open(fname))
+    fname = "/home/bryan/checkFile2.py"
+    form.add_file('biography2', fname, open(fname))
 
     # Build the request
-    request = urllib2.Request('http://mercury:8080/ktwebservice/upload.php')
+    request = urllib2.Request(server_base + '/ktwebservice/upload.php')
     #request.add_header('User-agent', 'PyMOTW (http://www.doughellmann.com/PyMOTW/)')
     body = str(form)
     request.add_header('Content-type', form.get_content_type())
-    request.add_header('Content-length', len(body))
+    request.add_header('Content-length', str(len(body)))
     request.add_data(body)
 
     print
@@ -99,4 +103,7 @@ if __name__ == '__main__':
 
     print
     print 'SERVER RESPONSE:'
-    print urllib2.urlopen(request).read()
+    data_str = urllib2.urlopen(request).read()
+    data = json.loads(data_str)
+    print data
+    print data['upload_status']['biography2']['tmp_name']
