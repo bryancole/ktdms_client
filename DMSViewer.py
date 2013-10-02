@@ -419,18 +419,20 @@ class PropertiesDialog(wx.Dialog):
     hide = ['treeid','mime_display','storage_path',
             'items','item_type','mime_icon_path']
     def __init__(self, parent, node):
-        wx.Dialog.__init__(self, parent,-1,"Properties...")
+        wx.Dialog.__init__(self, parent,-1,"Properties...", 
+                           size=(500,400), style=wx.DEFAULT_DIALOG_STYLE|wx.RESIZE_BORDER)
+        subwin = wx.ScrolledWindow(self, -1)
         sizer = wx.BoxSizer(wx.VERTICAL)
         keys = (k for k in node.__dict__ if not k.startswith('_'))
         keys = (k for k in keys if k not in self.hide)
         for k in keys:
             val = getattr(node, k)
             text = "%s : %s"%(k, str(val))
-            label = wx.StaticText(self, -1, text)
+            label = wx.StaticText(subwin, -1, text)
             sizer.Add(label, 0, wx.ALL, 5)
-        self.SetSizer(sizer)
-        self.Fit()
-        
+        subwin.SetSizer(sizer)
+        #self.Fit()
+        subwin.SetScrollRate(20,20)
         self.Bind(wx.EVT_CLOSE, self.OnClose)
     
     def OnClose(self, event):
