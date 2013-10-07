@@ -16,6 +16,8 @@ import urllib
 import urllib2
 import json
 
+
+
 search_tooltip = """Valid search fields:
   CheckedOut , 
   CheckedOutBy , 
@@ -181,7 +183,7 @@ class DMSSession(object):
         self._working = False
         
         self.workerThread = threading.Thread(target=self.Worker)
-        #self.workerThread.setDaemon(True)
+        self.workerThread.setDaemon(True)
         self.workerThread.start()
         
     def close(self):
@@ -244,11 +246,15 @@ class DMSSession(object):
             return []
         return ret.items #[folderItem(a) for a in ret.items]
     
-    @async
-    def search(self, text, options=""):
+    def _search(self, text, options=""):
         ret = self.server.search(self._id, str(text), options)
-        print "search result", ret
+        #print "search result", ret
         return ret
+    search = async(_search)
+    
+    def get_clean_uri(self, itemId):
+        rsp = self.server.get_clean_uri(self._id, int(itemId))
+        return rsp.message
     
     def _upload(self, local_filename, filename):
          # Create the form with simple fields
@@ -340,7 +346,7 @@ class FolderPopup(NodePopup):
     def __init__(self, frame, treeid, node):
         super(self.__class__, self).__init__(frame, treeid, node)
         id = self.Append(wx.NewId(), "Refresh")
-        self.Bind(wx.EVT_MENU, self.OnRefresh)
+        self.Bind(wx.EVT_MENU, self.OnRefresh, id)
         id = self.Append(wx.NewId(), "Add Document")
         self.Bind(wx.EVT_MENU, self.OnUpload, id)
         id = self.Append(wx.NewId(), "Add Folder")
@@ -459,7 +465,10 @@ class ModelNode(object):
         self._properties = properties
         
     def CopyURLToClipboard(self, session):
-        URI = self._properties['clean_uri']
+        try:
+            URI = self._properties['clean_uri']
+        except KeyError:
+            URI = session.get_clean_uri(self.id)
         base_url = session.serverName
         
         clipdata = wx.TextDataObject()
