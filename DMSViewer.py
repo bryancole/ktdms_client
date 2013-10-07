@@ -149,6 +149,7 @@ class MultiPartForm(object):
 AsyncTaskEventId = wx.NewEventType()
 EVT_ASYNC_TASK = wx.PyEventBinder(AsyncTaskEventId, 1)
 
+
 class AsyncTaskEvent(wx.PyEvent):
     def __init__(self, value):
         super(AsyncTaskEvent, self).__init__(AsyncTaskEventId)
@@ -323,10 +324,16 @@ class NodePopup(wx.Menu):
         wx.Menu.__init__(self)
         id = self.Append(wx.NewId(), "Properties")
         self.Bind(wx.EVT_MENU, self.OnProperties, id)
+        id = self.Append(wx.NewId(), "Copy URL")
+        self.Bind(wx.EVT_MENU, self.OnCopyURL, id)
         
     def OnProperties(self, event):
         dlg = PropertiesDialog(self.frame, self.node)
         dlg.ShowModal()
+        
+    def OnCopyURL(self, event):
+        session = self.frame.session
+        self.node.CopyURLToClipboard(session)
         
         
 class FolderPopup(NodePopup):
@@ -370,6 +377,7 @@ class DocumentPopup(NodePopup):
     _openFiles=[]
     def __init__(self, frame, treeid, node):
         super(self.__class__, self).__init__(frame, treeid, node)
+        
         id = self.Append(wx.NewId(), "Open")
         self.Bind(wx.EVT_MENU, self.OnOpen, id)
         
@@ -415,6 +423,7 @@ class DocumentPopup(NodePopup):
         print "launched program", fobj.name
         self._openFiles.append(fobj)
         
+        
 class PropertiesDialog(wx.Dialog):
     hide = ['treeid','mime_display','storage_path',
             'items','item_type','mime_icon_path']
@@ -438,6 +447,7 @@ class PropertiesDialog(wx.Dialog):
     def OnClose(self, event):
         self.Destroy()
         
+        
 class ModelNode(object):
     def __init__(self, soapItems):
         d = soapItems.__dict__
@@ -447,12 +457,23 @@ class ModelNode(object):
             properties[k] = d[k]
             setattr(self, k, d[k])
         self._properties = properties
+        
+    def CopyURLToClipboard(self, session):
+        URI = self._properties['clean_uri']
+        base_url = session.serverName
+        
+        clipdata = wx.TextDataObject()
+        clipdata.SetText(base_url + URI)
+        wx.TheClipboard.Open()
+        wx.TheClipboard.SetData(clipdata)
+        wx.TheClipboard.Close()
             
     def GetPopupMenu(self, frame, treeid, node):
         return self._popup(frame, treeid, node)
     
     def Drop(self, session, data):
         pass
+    
     
 class DummyNode(object):
     def __init__(self, id):
